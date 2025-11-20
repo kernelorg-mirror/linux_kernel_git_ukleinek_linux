@@ -27,6 +27,7 @@ struct bcm2835_pwm {
 	void __iomem *base;
 	struct clk *clk;
 	unsigned long rate;
+	u64 max_period_ns;
 };
 
 static inline struct bcm2835_pwm *to_bcm2835_pwm(struct pwm_chip *chip)
@@ -40,27 +41,10 @@ static int bcm2835_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
 
 	struct bcm2835_pwm *pc = to_bcm2835_pwm(chip);
 	unsigned long long period_cycles;
-	u64 max_period;
 
 	u32 val;
 
-	/*
-	 * period_cycles must be a 32 bit value, so period * rate / NSEC_PER_SEC
-	 * must be <= U32_MAX. As U32_MAX * NSEC_PER_SEC < U64_MAX the
-	 * multiplication period * rate doesn't overflow.
-	 * To calculate the maximal possible period that guarantees the
-	 * above inequality:
-	 *
-	 *     round(period * rate / NSEC_PER_SEC) <= U32_MAX
-	 * <=> period * rate / NSEC_PER_SEC < U32_MAX + 0.5
-	 * <=> period * rate < (U32_MAX + 0.5) * NSEC_PER_SEC
-	 * <=> period < ((U32_MAX + 0.5) * NSEC_PER_SEC) / rate
-	 * <=> period < ((U32_MAX * NSEC_PER_SEC + NSEC_PER_SEC/2) / rate
-	 * <=> period <= ceil((U32_MAX * NSEC_PER_SEC + NSEC_PER_SEC/2) / rate) - 1
-	 */
-	max_period = DIV_ROUND_UP_ULL((u64)U32_MAX * NSEC_PER_SEC + NSEC_PER_SEC / 2, pc->rate) - 1;
-
-	if (state->period > max_period)
+	if (state->period > pc->max_period_ns)
 		return -EINVAL;
 
 	/* set period */
@@ -132,6 +116,22 @@ static int bcm2835_pwm_probe(struct platform_device *pdev)
 	if (!pc->rate)
 		return dev_err_probe(dev, -EINVAL,
 				     "failed to get clock rate\n");
+
+	/*
+	 * period_cycles must be a 32 bit value, so period * rate / NSEC_PER_SEC
+	 * must be <= U32_MAX. As (U32_MAX + 1/2) * NSEC_PER_SEC < U64_MAX the
+	 * intermediate result period * rate + NSEC_PER_SEC/2 doesn't overflow
+	 * an u64. To calculate the maximal possible period that guarantees the
+	 * above inequality:
+	 *
+	 *   round(period * rate / NSEC_PER_SEC) ≤ U32_MAX
+	 * ⇔ period * rate / NSEC_PER_SEC < U32_MAX + 0.5
+	 * ⇔ period * rate < (U32_MAX + 0.5) * NSEC_PER_SEC
+	 * ⇔ period < ((U32_MAX + 0.5) * NSEC_PER_SEC) / rate
+	 * ⇔ period < ((U32_MAX * NSEC_PER_SEC + NSEC_PER_SEC/2) / rate
+	 * ⇔ period ≤ ceil((U32_MAX * NSEC_PER_SEC + NSEC_PER_SEC/2) / rate) - 1
+	 */
+	pc->max_period_ns = DIV_ROUND_UP_ULL((u64)U32_MAX * NSEC_PER_SEC + NSEC_PER_SEC / 2, pc->rate) - 1;
 
 	chip->ops = &bcm2835_pwm_ops;
 	chip->atomic = true;
