@@ -11,17 +11,35 @@
 #include <linux/platform_device.h>
 #include <linux/pwm.h>
 
-#define PWM_CONTROL		0x000
-#define PWM_CONTROL_SHIFT(x)	((x) * 8)
-#define PWM_CONTROL_MASK	0xff
-#define PWM_MODE		0x80		/* set timer in PWM mode */
-#define PWM_ENABLE		(1 << 0)
-#define PWM_POLARITY		(1 << 4)
+/* PWM Control */
+#define BCM2835PWM_CTL		0x00
+#define BCM2835PWM_CTL_MSEN2		BIT(15)
+#define BCM2835PWM_CTL_USEF2		BIT(13)
+#define BCM2835PWM_CTL_POLA2		BIT(12)
+#define BCM2835PWM_CTL_SBIT2		BIT(11)
+#define BCM2835PWM_CTL_RPTL2		BIT(10)
+#define BCM2835PWM_CTL_MODE2		BIT(9)
+#define BCM2835PWM_CTL_PWEN2		BIT(8)
+#define BCM2835PWM_CTL_MSEN1		BIT(7)
+#define BCM2835PWM_CTL_CLRF1		BIT(6)
+#define BCM2835PWM_CTL_USEF1		BIT(5)
+#define BCM2835PWM_CTL_POLA1		BIT(4)
+#define BCM2835PWM_CTL_SBIT1		BIT(3)
+#define BCM2835PWM_CTL_RPTL1		BIT(2)
+#define BCM2835PWM_CTL_MODE1		BIT(1)
+#define BCM2835PWM_CTL_PWEN1		BIT(0)
 
-#define PERIOD(x)		(((x) * 0x10) + 0x10)
-#define DUTY(x)			(((x) * 0x10) + 0x14)
+/* PWM Channel 1 Range */
+#define BCM2835PWM_RNG1		0x10
 
-#define PERIOD_MIN		0x2
+/* PWM Channel 1 Data */
+#define BCM2835PWM_DAT1		0x14
+
+/* PWM Channel 2 Range */
+#define BCM2835PWM_RNG2		0x20
+
+/* PWM Channel 2 Data */
+#define BCM2835PWM_DAT2		0x24
 
 struct bcm2835_pwm {
 	void __iomem *base;
@@ -35,55 +53,153 @@ static inline struct bcm2835_pwm *to_bcm2835_pwm(struct pwm_chip *chip)
 	return pwmchip_get_drvdata(chip);
 }
 
-static int bcm2835_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
-			     const struct pwm_state *state)
+struct bcm2835_pwm_wfhw {
+	u32 ctl;
+	u32 rng;
+	u32 dat;
+};
+
+static int bcm2835_pwm_round_waveform_tohw(struct pwm_chip *chip,
+					   struct pwm_device *pwm,
+					   const struct pwm_waveform *wf,
+					   void *_wfhw)
 {
-
+	struct bcm2835_pwm_wfhw *wfhw = _wfhw;
 	struct bcm2835_pwm *pc = to_bcm2835_pwm(chip);
-	unsigned long long period_cycles;
+	u64 period_ticks, duty_ticks;
+	int ret = 0;
+	bool inversed = false;
 
-	u32 val;
+	if (wf->period_length_ns == 0) {
+		*wfhw = (struct bcm2835_pwm_wfhw){
+			.ctl = 0,
+		};
 
-	if (state->period > pc->max_period_ns)
-		return -EINVAL;
+		return 0;
+	}
 
-	/* set period */
-	period_cycles = DIV_ROUND_CLOSEST_ULL(state->period * pc->rate, NSEC_PER_SEC);
-
-	/* don't accept a period that is too small */
-	if (period_cycles < PERIOD_MIN)
-		return -EINVAL;
-
-	writel(period_cycles, pc->base + PERIOD(pwm->hwpwm));
-
-	/* set duty cycle */
-	val = DIV_ROUND_CLOSEST_ULL(state->duty_cycle * pc->rate, NSEC_PER_SEC);
-	writel(val, pc->base + DUTY(pwm->hwpwm));
-
-	/* set polarity */
-	val = readl(pc->base + PWM_CONTROL);
-
-	val &= ~(PWM_CONTROL_MASK << PWM_CONTROL_SHIFT(pwm->hwpwm));
-	val |= PWM_MODE << PWM_CONTROL_SHIFT(pwm->hwpwm);
-
-	if (state->polarity == PWM_POLARITY_NORMAL)
-		val &= ~(PWM_POLARITY << PWM_CONTROL_SHIFT(pwm->hwpwm));
+	if (wf->period_length_ns >= pc->max_period_ns)
+		period_ticks = U32_MAX;
 	else
-		val |= PWM_POLARITY << PWM_CONTROL_SHIFT(pwm->hwpwm);
+		period_ticks = DIV_ROUND_DOWN_ULL(wf->period_length_ns * pc->rate,
+						  NSEC_PER_SEC);
+	if (!period_ticks) {
+		period_ticks = 1;
+		ret = 1;
+	}
 
-	/* enable/disable */
-	if (state->enabled)
-		val |= PWM_ENABLE << PWM_CONTROL_SHIFT(pwm->hwpwm);
+	if (wf->duty_length_ns >= pc->max_period_ns)
+		duty_ticks = U32_MAX;
 	else
-		val &= ~(PWM_ENABLE << PWM_CONTROL_SHIFT(pwm->hwpwm));
+		duty_ticks = DIV_ROUND_DOWN_ULL(wf->duty_length_ns * pc->rate,
+						NSEC_PER_SEC);
 
-	writel(val, pc->base + PWM_CONTROL);
+	if (wf->duty_length_ns && wf->duty_offset_ns &&
+	    wf->duty_length_ns + wf->duty_offset_ns >= wf->period_length_ns) {
+		inversed = true;
+		duty_ticks = period_ticks - duty_ticks;
+	}
+
+	*wfhw = (struct bcm2835_pwm_wfhw){
+		.ctl = BCM2835PWM_CTL_PWEN1 | BCM2835PWM_CTL_MSEN1 |
+			(inversed ? BCM2835PWM_CTL_POLA1 : 0),
+		.rng = period_ticks,
+		.dat = duty_ticks,
+	};
+
+	dev_dbg(&chip->dev,
+		"pwm#%u: %lld/%lld [+%lld] @%lu -> CTL: %08x, RNG: %08x, DAT: %08x\n",
+		pwm->hwpwm, wf->duty_length_ns, wf->period_length_ns, wf->duty_offset_ns,
+		pc->rate, wfhw->ctl, wfhw->rng, wfhw->dat);
+
+	return ret;
+}
+
+static int bcm2835_pwm_round_waveform_fromhw(struct pwm_chip *chip, struct pwm_device *pwm,
+					     const void *_wfhw, struct pwm_waveform *wf)
+{
+	const struct bcm2835_pwm_wfhw *wfhw = _wfhw;
+	struct bcm2835_pwm *pc = to_bcm2835_pwm(chip);
+
+	if (wfhw->ctl & BCM2835PWM_CTL_PWEN1) {
+		*wf = (struct pwm_waveform){
+			.period_length_ns = DIV64_U64_ROUND_UP((u64)wfhw->rng * NSEC_PER_SEC,
+							       pc->rate),
+		};
+
+		if (wfhw->ctl & BCM2835PWM_CTL_POLA1) {
+			wf->duty_offset_ns = DIV64_U64_ROUND_UP((u64)wfhw->dat * NSEC_PER_SEC,
+								pc->rate);
+			wf->duty_length_ns =
+				DIV64_U64_ROUND_UP((u64)(wfhw->rng - wfhw->dat) * NSEC_PER_SEC,
+						   pc->rate);
+		} else {
+			wf->duty_length_ns = DIV64_U64_ROUND_UP((u64)wfhw->dat * NSEC_PER_SEC,
+								pc->rate);
+		}
+	} else {
+		*wf = (struct pwm_waveform){
+			.period_length_ns = 0,
+		};
+	}
+
+	dev_dbg(&chip->dev,
+		"pwm#%u: CTL: %08x, RNG: %08x, DAT: %08x @%lu -> %lld/%lld [+%lld]\n",
+		pwm->hwpwm, wfhw->ctl, wfhw->rng, wfhw->dat, pc->rate,
+		wf->duty_length_ns, wf->period_length_ns, wf->duty_offset_ns);
+
+	return 0;
+}
+
+static int bcm2835_pwm_read_waveform(struct pwm_chip *chip, struct pwm_device *pwm,
+				     void *_wfhw)
+{
+	struct bcm2835_pwm_wfhw *wfhw = _wfhw;
+	struct bcm2835_pwm *pc = to_bcm2835_pwm(chip);
+	u32 ctl;
+
+	ctl = readl(pc->base + BCM2835PWM_CTL);
+	if (pwm->hwpwm)
+		ctl >>= 8;
+
+	wfhw->ctl = ctl;
+
+	wfhw->rng = readl(pc->base + (pwm->hwpwm ? BCM2835PWM_RNG2 : BCM2835PWM_RNG1));
+	wfhw->dat = readl(pc->base + (pwm->hwpwm ? BCM2835PWM_DAT2 : BCM2835PWM_DAT1));
+
+	return 0;
+}
+
+static int bcm2835_pwm_write_waveform(struct pwm_chip *chip, struct pwm_device *pwm,
+				      const void *_wfhw)
+{
+	const struct bcm2835_pwm_wfhw *wfhw = _wfhw;
+	struct bcm2835_pwm *pc = to_bcm2835_pwm(chip);
+	u32 ctl;
+	u32 ctl_shift = pwm->hwpwm ? 8 : 0;
+	u32 ctl_mask = BCM2835PWM_CTL_PWEN1 | BCM2835PWM_CTL_MODE1 | BCM2835PWM_CTL_POLA1 |
+		BCM2835PWM_CTL_USEF1 | BCM2835PWM_CTL_MSEN1;
+
+	ctl = readl(pc->base + BCM2835PWM_CTL);
+	ctl &= ~(ctl_mask << ctl_shift);
+	ctl |= (wfhw->ctl & ctl_mask) << ctl_shift;
+
+	dev_dbg(&chip->dev, "pwm#%u: write CTL: %08x, RNG: %08x, DAT: %08x, actual CTL: %08x\n",
+		pwm->hwpwm, wfhw->ctl, wfhw->rng, wfhw->dat, ctl);
+
+	writel(wfhw->rng, pc->base + (pwm->hwpwm ? BCM2835PWM_RNG2 : BCM2835PWM_RNG1));
+	writel(wfhw->dat, pc->base + (pwm->hwpwm ? BCM2835PWM_DAT2 : BCM2835PWM_DAT1));
+	writel(ctl, pc->base + BCM2835PWM_CTL);
 
 	return 0;
 }
 
 static const struct pwm_ops bcm2835_pwm_ops = {
-	.apply = bcm2835_pwm_apply,
+	.sizeof_wfhw = sizeof(struct bcm2835_pwm_wfhw),
+	.round_waveform_tohw = bcm2835_pwm_round_waveform_tohw,
+	.round_waveform_fromhw = bcm2835_pwm_round_waveform_fromhw,
+	.read_waveform = bcm2835_pwm_read_waveform,
+	.write_waveform = bcm2835_pwm_write_waveform,
 };
 
 static int bcm2835_pwm_probe(struct platform_device *pdev)
@@ -118,20 +234,23 @@ static int bcm2835_pwm_probe(struct platform_device *pdev)
 				     "failed to get clock rate\n");
 
 	/*
-	 * period_cycles must be a 32 bit value, so period * rate / NSEC_PER_SEC
-	 * must be <= U32_MAX. As (U32_MAX + 1/2) * NSEC_PER_SEC < U64_MAX the
-	 * intermediate result period * rate + NSEC_PER_SEC/2 doesn't overflow
-	 * an u64. To calculate the maximal possible period that guarantees the
-	 * above inequality:
+	 * period_cycles must be a 32 bit value. As all values bigger than that
+	 * are mapped to U32_MAX, all period lengths that are shorter than
+	 * U32_MAX clock cycles must be converted, the bigger ones are mapped
+	 * directly to U32_MAX.
+	 * For the shortest period length that maps to U32_MAX we have:
 	 *
-	 *   round(period * rate / NSEC_PER_SEC) ≤ U32_MAX
-	 * ⇔ period * rate / NSEC_PER_SEC < U32_MAX + 0.5
-	 * ⇔ period * rate < (U32_MAX + 0.5) * NSEC_PER_SEC
-	 * ⇔ period < ((U32_MAX + 0.5) * NSEC_PER_SEC) / rate
-	 * ⇔ period < ((U32_MAX * NSEC_PER_SEC + NSEC_PER_SEC/2) / rate
-	 * ⇔ period ≤ ceil((U32_MAX * NSEC_PER_SEC + NSEC_PER_SEC/2) / rate) - 1
+	 *   floor(period * rate / NSEC_PER_SEC) ≥ U32_MAX
+	 * ⇔ period * rate / NSEC_PER_SEC ≥ U32_MAX
+	 * ⇔ period * rate ≥ U32_MAX * NSEC_PER_SEC
+	 * ⇔ period ≥ (U32_MAX * NSEC_PER_SEC) / rate
+	 * ⇔ period ≥ ceil((U32_MAX * NSEC_PER_SEC) / rate)
+	 *
+	 * As U32_MAX * NSEC_PER_SEC < U64_MAX the intermediate result
+	 * period * rate doesn't overflow an u64 with the above inequality.
+	 *
 	 */
-	pc->max_period_ns = DIV_ROUND_UP_ULL((u64)U32_MAX * NSEC_PER_SEC + NSEC_PER_SEC / 2, pc->rate) - 1;
+	pc->max_period_ns = DIV_ROUND_UP_ULL((u64)U32_MAX * NSEC_PER_SEC, pc->rate);
 
 	chip->ops = &bcm2835_pwm_ops;
 	chip->atomic = true;
