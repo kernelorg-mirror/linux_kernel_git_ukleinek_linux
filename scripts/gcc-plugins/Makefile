@@ -31,7 +31,7 @@ plugin_cxxflags	= -Wp,-MMD,$(depfile) $(KBUILD_HOSTCXXFLAGS) -fPIC \
 		  -DPLUGIN_VERSION=$(call stringify,$(KERNELVERSION)) \
 		  -I $(GCC_PLUGINS_DIR)/include -I $(obj) \
 		  -fno-rtti -fno-exceptions -fasynchronous-unwind-tables \
-		  -ggdb -Wno-narrowing -Wno-unused-variable \
+		  -Wno-narrowing -Wno-unused-variable \
 		  -Wno-format-diag
 
 plugin_ldflags	= -shared

@@ -205,8 +205,7 @@ extern struct module __this_module;
 	__PASTE(__,						\
 	__PASTE(__COUNTER__,					\
 	__PASTE(_,						\
-	__PASTE(__LINE__,					\
-	__PASTE(_, fn)))))))
+	__PASTE(_, fn))))))
 
 /* Format: __<prefix>__<iid><id> */
 #define __initcall_name(prefix, __iid, id)			\

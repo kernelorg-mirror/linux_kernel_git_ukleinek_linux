@@ -119,14 +119,14 @@ static inline void  PRINTF(5, 6) check_msg(struct check *c, struct dt_info *dti,
 
 #define FAIL(c, dti, node, ...)						\
 	do {								\
-		TRACE((c), "\t\tFAILED at %s:%d", __FILE__, __LINE__);	\
+		TRACE((c), "\t\tFAILED at %s:%d", "__FILE__", __LINE__);	\
 		(c)->status = FAILED;					\
 		check_msg((c), dti, node, NULL, __VA_ARGS__);		\
 	} while (0)
 
 #define FAIL_PROP(c, dti, node, prop, ...)				\
 	do {								\
-		TRACE((c), "\t\tFAILED at %s:%d", __FILE__, __LINE__);	\
+		TRACE((c), "\t\tFAILED at %s:%d", "__FILE__", __LINE__);	\
 		(c)->status = FAILED;					\
 		check_msg((c), dti, node, prop, __VA_ARGS__);		\
 	} while (0)

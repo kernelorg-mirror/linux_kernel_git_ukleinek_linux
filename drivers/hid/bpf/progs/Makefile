@@ -19,7 +19,7 @@ LIBBPF_INCLUDE := $(LIBBPF_DESTDIR)/include
 BPFOBJ := $(LIBBPF_OUTPUT)/libbpf.a
 
 INCLUDES := -I$(OUTPUT) -I$(LIBBPF_INCLUDE) -I$(TOOLS_PATH)/include/uapi
-CFLAGS := -g -Wall
+CFLAGS := -Wall
 
 VMLINUX_BTF_PATHS ?= $(if $(O),$(O)/vmlinux)				\
 		     $(if $(KBUILD_OUTPUT),$(KBUILD_OUTPUT)/vmlinux)	\

@@ -34,7 +34,7 @@
 #include "vpu_boot_api.h"
 
 #ifndef DRIVER_VERSION_STR
-#define DRIVER_VERSION_STR "1.0.0 " UTS_RELEASE
+#define DRIVER_VERSION_STR "1.0.0"
 #endif
 
 int ivpu_dbg_mask;

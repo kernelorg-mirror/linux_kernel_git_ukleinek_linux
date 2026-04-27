@@ -37,7 +37,7 @@ comedi_h.py: $(INC_UAPI)/linux/comedi.h
 	ctypesgen $< --include "sys/ioctl.h" --cpp 'gcc -E $(CPPFLAGS)' -o $@
 
 convert_c_to_py: all_cfiles.c linux/comedi.h
-	gcc -g -I. convert_c_to_py.c -o convert_c_to_py -std=c99
+	gcc -I. convert_c_to_py.c -o convert_c_to_py -std=c99
 
 # Create a local 'linux/comedi.h' for use when compiling 'convert_c_to_py.c'
 # with the '-I.' option.  (Cannot specify '-I../../../../../include/uapi'

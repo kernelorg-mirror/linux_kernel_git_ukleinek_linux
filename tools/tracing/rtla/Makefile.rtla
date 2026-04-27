@@ -26,7 +26,7 @@ ifeq ($(CC),clang)
 endif
 
 CFLAGS		:= -g -DVERSION=\"$(VERSION)\" $(FOPTS) $(WOPTS) $(CFLAGS)
-LDFLAGS		:= -ggdb $(LDFLAGS)
+LDFLAGS		:= $(LDFLAGS)
 
 RM		:= rm -rf
 LN		:= ln -s

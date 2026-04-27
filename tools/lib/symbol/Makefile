@@ -28,7 +28,7 @@ DESTDIR_SQ = '$(subst ','\'',$(DESTDIR))'
 LIBFILE = $(OUTPUT)libsymbol.a
 
 CFLAGS := $(EXTRA_WARNINGS) $(EXTRA_CFLAGS)
-CFLAGS += -ggdb3 -Wall -Wextra -std=gnu11 -U_FORTIFY_SOURCE -fPIC
+CFLAGS += -Wall -Wextra -std=gnu11 -U_FORTIFY_SOURCE -fPIC
 
 ifeq ($(DEBUG),0)
   CFLAGS += -O3
