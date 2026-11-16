@@ -28,6 +28,7 @@
 #define ECCTL2_APWM_MODE	BIT(9)
 #define ECCTL2_SYNC_SEL_DISA	(BIT(7) | BIT(6))
 #define ECCTL2_TSCTR_FREERUN	BIT(4)
+#define ECCTL2_RUNNING		(ECCTL2_APWM_MODE | ECCTL2_TSCTR_FREERUN)
 
 struct ecap_context {
 	u32 cap3;
@@ -206,8 +207,42 @@ static int ecap_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
 	return 0;
 }
 
+static int ecap_pwm_get_state(struct pwm_chip *chip, struct pwm_device *pwm,
+			      struct pwm_state *state)
+{
+	struct ecap_pwm_chip *pc = to_ecap_pwm_chip(chip);
+	u32 period_cycles, duty_cycles;
+	u16 value;
+	int ret;
+
+	ret = pm_runtime_resume_and_get(pwmchip_parent(chip));
+	if (ret)
+		return ret;
+
+	value = readw(pc->mmio_base + ECCTL2);
+	state->enabled = (value & ECCTL2_RUNNING) == ECCTL2_RUNNING;
+	/*
+	 * While running, .apply() writes the shadow registers, loaded at the
+	 * end of the period.
+	 */
+	period_cycles = readl(pc->mmio_base + (state->enabled ? CAP3 : CAP1));
+	duty_cycles = readl(pc->mmio_base + (state->enabled ? CAP4 : CAP2));
+
+	pm_runtime_put_sync(pwmchip_parent(chip));
+
+	state->polarity = value & ECCTL2_APWM_POL_LOW ? PWM_POLARITY_INVERSED :
+							PWM_POLARITY_NORMAL;
+	state->period = DIV_ROUND_UP_ULL((u64)period_cycles * NSEC_PER_SEC,
+					 pc->clk_rate);
+	state->duty_cycle = DIV_ROUND_UP_ULL((u64)duty_cycles * NSEC_PER_SEC,
+					     pc->clk_rate);
+
+	return 0;
+}
+
 static const struct pwm_ops ecap_pwm_ops = {
 	.apply = ecap_pwm_apply,
+	.get_state = ecap_pwm_get_state,
 };
 
 static const struct of_device_id ecap_of_match[] = {
@@ -223,6 +258,7 @@ static int ecap_pwm_probe(struct platform_device *pdev)
 	struct ecap_pwm_chip *pc;
 	struct pwm_chip *chip;
 	struct clk *clk;
+	bool running;
 	int ret;
 
 	chip = devm_pwmchip_alloc(&pdev->dev, 1, sizeof(*pc));
@@ -255,21 +291,39 @@ static int ecap_pwm_probe(struct platform_device *pdev)
 	if (IS_ERR(pc->mmio_base))
 		return PTR_ERR(pc->mmio_base);
 
+	platform_set_drvdata(pdev, chip);
+
+	ret = devm_pm_runtime_enable(&pdev->dev);
+	if (ret)
+		return ret;
+
+	ret = pm_runtime_resume_and_get(&pdev->dev);
+	if (ret)
+		return ret;
+
+	/*
+	 * A PWM left running by the bootloader holds the reference
+	 * ecap_pwm_enable() takes.
+	 */
+	running = (readw(pc->mmio_base + ECCTL2) & ECCTL2_RUNNING) ==
+		  ECCTL2_RUNNING;
+	if (running) {
+		/* The bootloader may have left the shadow registers unset */
+		writel(readl(pc->mmio_base + CAP1), pc->mmio_base + CAP3);
+		writel(readl(pc->mmio_base + CAP2), pc->mmio_base + CAP4);
+	} else {
+		pm_runtime_put_sync(&pdev->dev);
+	}
+
 	ret = devm_pwmchip_add(&pdev->dev, chip);
 	if (ret < 0) {
+		if (running)
+			pm_runtime_put_sync(&pdev->dev);
 		dev_err(&pdev->dev, "pwmchip_add() failed: %d\n", ret);
 		return ret;
 	}
 
-	platform_set_drvdata(pdev, chip);
-	pm_runtime_enable(&pdev->dev);
-
 	return 0;
-}
-
-static void ecap_pwm_remove(struct platform_device *pdev)
-{
-	pm_runtime_disable(&pdev->dev);
 }
 
 static void ecap_pwm_save_context(struct pwm_chip *chip)
@@ -328,7 +382,6 @@ static struct platform_driver ecap_pwm_driver = {
 		.pm = pm_ptr(&ecap_pwm_pm_ops),
 	},
 	.probe = ecap_pwm_probe,
-	.remove = ecap_pwm_remove,
 };
 module_platform_driver(ecap_pwm_driver);
 
